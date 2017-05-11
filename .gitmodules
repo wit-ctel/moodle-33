@@ -1,0 +1,3 @@
+[submodule "theme/huey"]
+	path = theme/huey
+	url = git@github.com:wit-ctel/huey.git
