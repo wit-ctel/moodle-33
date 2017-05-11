@@ -1,3 +1,6 @@
 [submodule "theme/huey"]
 	path = theme/huey
 	url = git@github.com:wit-ctel/huey.git
+[submodule "course/format/simple"]
+	path = course/format/simple
+	url = git@github.com:wit-ctel/moodle-format_simple.git
