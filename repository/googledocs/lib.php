@@ -432,10 +432,16 @@ class repository_googledocs extends repository {
             throw new repository_exception('cannotdownload', 'repository');
         }
 
-        $client = $this->get_user_oauth_client();
-        $base = 'https://www.googleapis.com/drive/v3';
-
         $source = json_decode($reference);
+
+        $client = null;
+        if (!empty($source->usesystem)) {
+            $client = \core\oauth2\api::get_system_oauth_client($this->issuer);
+        } else {
+            $client = $this->get_user_oauth_client();
+        }
+
+        $base = 'https://www.googleapis.com/drive/v3';
 
         $newfilename = false;
         if ($source->exportformat == 'download') {
@@ -588,7 +594,7 @@ class repository_googledocs extends repository {
                                    $storedfile->get_filepath(),
                                    $storedfile->get_filename());
 
-        if (empty($options['offline']) && !empty($info) && $info->is_writable()) {
+        if (empty($options['offline']) && !empty($info) && $info->is_writable() && !empty($source->usesystem)) {
             // Add the current user as an OAuth writer.
             $systemauth = \core\oauth2\api::get_system_oauth_client($this->issuer);
 
@@ -630,7 +636,8 @@ class repository_googledocs extends repository {
             }
             send_file($downloaded['path'], $filename, $lifetime, $filter, false, $forcedownload, '', false, $options);
         } else if ($source->link) {
-            redirect($source->link);
+            // Do not use redirect() here because is not compatible with webservice/pluginfile.php.
+            header('Location: ' . $source->link);
         } else {
             $details = 'File is missing source link';
             throw new repository_exception('errorwhilecommunicatingwith', 'repository', '', $details);
@@ -865,6 +872,12 @@ class repository_googledocs extends repository {
         // finally update the reference to contain the share link if it was not
         // already there (and point to new file id if we copied).
 
+        // Get the details from the reference.
+        $source = json_decode($reference);
+        if (!empty($source->usesystem)) {
+            // If we already copied this file to the system account - we are done.
+            return $reference;
+        }
 
         // Check this issuer is enabled.
         if ($this->disabled) {
@@ -888,8 +901,6 @@ class repository_googledocs extends repository {
             throw new repository_exception('errorwhilecommunicatingwith', 'repository', '', $details);
         }
 
-        // Get the details from the reference.
-        $source = json_decode($reference);
         $userservice = new repository_googledocs\rest($userauth);
         $systemservice = new repository_googledocs\rest($systemauth);
 
@@ -945,6 +956,7 @@ class repository_googledocs extends repository {
         // Update the returned reference so that the stored_file in moodle points to the newly copied file.
         $source->id = $newsource->id;
         $source->link = isset($newsource->webViewLink) ? $newsource->webViewLink : '';
+        $source->usesystem = true;
         if (empty($source->link)) {
             $source->link = isset($newsource->webContentLink) ? $newsource->webContentLink : '';
         }
@@ -967,6 +979,9 @@ class repository_googledocs extends repository {
             return get_string('unknownsource', 'repository');
         }
         $source = json_decode($reference);
+        if (empty($source->usesystem)) {
+            return '';
+        }
         $systemauth = \core\oauth2\api::get_system_oauth_client($this->issuer);
 
         if ($systemauth === false) {

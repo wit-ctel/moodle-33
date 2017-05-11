@@ -334,9 +334,9 @@ class event_mapper_test_event implements event_interface {
 
     public function get_times() {
         return new event_times(
-            (new \DateTimeImmutable())->setTimestamp('-2461276800'),
-            (new \DateTimeImmutable())->setTimestamp('115776000'),
-            (new \DateTimeImmutable())->setTimestamp('115776000'),
+            (new \DateTimeImmutable())->setTimestamp(-386380800),
+            (new \DateTimeImmutable())->setTimestamp(115776000),
+            (new \DateTimeImmutable())->setTimestamp(115776000),
             (new \DateTimeImmutable())->setTimestamp(time())
         );
     }
@@ -382,14 +382,10 @@ class event_mapper_test_proxy implements proxy_interface {
     }
 
     public function get($member) {
+        if ($member === 'id') {
+            return $this->id;
+        }
         return isset($params[$member]) ? $params[$member] : null;
-    }
-
-    public function get_id() {
-        return $this->id;
-    }
-
-    public function set($member, $value) {
     }
 
     public function get_proxied_instance() {

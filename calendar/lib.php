@@ -123,7 +123,7 @@ define('CALENDAR_SUBSCRIPTION_REMOVE', 2);
 /**
  * CALENDAR_EVENT_USER_OVERRIDE_PRIORITY - Constant for the user override priority.
  */
-define('CALENDAR_EVENT_USER_OVERRIDE_PRIORITY', 9999999);
+define('CALENDAR_EVENT_USER_OVERRIDE_PRIORITY', 0);
 
 /**
  * CALENDAR_EVENT_TYPE_STANDARD - Standard events.
@@ -1076,186 +1076,91 @@ class calendar_information {
  * @return array $events of selected events or an empty array if there aren't any (or there was an error)
  */
 function calendar_get_events($tstart, $tend, $users, $groups, $courses, $withduration=true, $ignorehidden=true) {
-    // We have a new implementation of this function in the calendar API class, which has slightly different behaviour
-    // so the old implementation must remain here.
     global $DB;
-    $params = array();
 
+    $whereclause = '';
+    $params = array();
     // Quick test.
     if (empty($users) && empty($groups) && empty($courses)) {
         return array();
     }
 
-    // Array of filter conditions. To be concatenated by the OR operator.
-    $filters = [];
-
-    // User filter.
     if ((is_array($users) && !empty($users)) or is_numeric($users)) {
-        // Events from a number of users.
+        // Events from a number of users
+        if(!empty($whereclause)) $whereclause .= ' OR';
         list($insqlusers, $inparamsusers) = $DB->get_in_or_equal($users, SQL_PARAMS_NAMED);
-        $filters[] = "(e.userid $insqlusers AND e.courseid = 0 AND e.groupid = 0)";
+        $whereclause .= " (e.userid $insqlusers AND e.courseid = 0 AND e.groupid = 0)";
         $params = array_merge($params, $inparamsusers);
-    } else if ($users === true) {
-        // Events from ALL users.
-        $filters[] = "(e.userid != 0 AND e.courseid = 0 AND e.groupid = 0)";
+    } else if($users === true) {
+        // Events from ALL users
+        if(!empty($whereclause)) $whereclause .= ' OR';
+        $whereclause .= ' (e.userid != 0 AND e.courseid = 0 AND e.groupid = 0)';
+    } else if($users === false) {
+        // No user at all, do nothing
     }
 
-    // Boolean false (no users at all): We don't need to do anything.
-    // Group filter.
     if ((is_array($groups) && !empty($groups)) or is_numeric($groups)) {
-        // Events from a number of groups.
+        // Events from a number of groups
+        if(!empty($whereclause)) $whereclause .= ' OR';
         list($insqlgroups, $inparamsgroups) = $DB->get_in_or_equal($groups, SQL_PARAMS_NAMED);
-        $filters[] = "e.groupid $insqlgroups";
+        $whereclause .= " e.groupid $insqlgroups ";
         $params = array_merge($params, $inparamsgroups);
-    } else if ($groups === true) {
-        // Events from ALL groups.
-        $filters[] = "e.groupid != 0";
+    } else if($groups === true) {
+        // Events from ALL groups
+        if(!empty($whereclause)) $whereclause .= ' OR ';
+        $whereclause .= ' e.groupid != 0';
     }
+    // boolean false (no groups at all): we don't need to do anything
 
-    // Boolean false (no groups at all): We don't need to do anything.
-    // Course filter.
     if ((is_array($courses) && !empty($courses)) or is_numeric($courses)) {
+        if(!empty($whereclause)) $whereclause .= ' OR';
         list($insqlcourses, $inparamscourses) = $DB->get_in_or_equal($courses, SQL_PARAMS_NAMED);
-        $filters[] = "(e.groupid = 0 AND e.courseid $insqlcourses)";
+        $whereclause .= " (e.groupid = 0 AND e.courseid $insqlcourses)";
         $params = array_merge($params, $inparamscourses);
     } else if ($courses === true) {
-        // Events from ALL courses.
-        $filters[] = "(e.groupid = 0 AND e.courseid != 0)";
+        // Events from ALL courses
+        if(!empty($whereclause)) $whereclause .= ' OR';
+        $whereclause .= ' (e.groupid = 0 AND e.courseid != 0)';
     }
 
     // Security check: if, by now, we have NOTHING in $whereclause, then it means
     // that NO event-selecting clauses were defined. Thus, we won't be returning ANY
     // events no matter what. Allowing the code to proceed might return a completely
     // valid query with only time constraints, thus selecting ALL events in that time frame!
-    if (empty($filters)) {
+    if(empty($whereclause)) {
         return array();
     }
 
-    // Build our clause for the filters.
-    $filterclause = implode(' OR ', $filters);
-
-    // Array of where conditions for our query. To be concatenated by the AND operator.
-    $whereconditions = ["($filterclause)"];
-
-    // Time clause.
-    if ($withduration) {
-        $timeclause = "((e.timestart >= :tstart1 OR e.timestart + e.timeduration > :tstart2) AND e.timestart <= :tend)";
-        $params['tstart1'] = $tstart;
-        $params['tstart2'] = $tstart;
-        $params['tend'] = $tend;
-    } else {
-        $timeclause = "(e.timestart >= :tstart AND e.timestart <= :tend)";
-        $params['tstart'] = $tstart;
-        $params['tend'] = $tend;
+    if($withduration) {
+        $timeclause = '(e.timestart >= '.$tstart.' OR e.timestart + e.timeduration > '.$tstart.') AND e.timestart <= '.$tend;
     }
-    $whereconditions[] = $timeclause;
+    else {
+        $timeclause = 'e.timestart >= '.$tstart.' AND e.timestart <= '.$tend;
+    }
+    if(!empty($whereclause)) {
+        // We have additional constraints
+        $whereclause = $timeclause.' AND ('.$whereclause.')';
+    }
+    else {
+        // Just basic time filtering
+        $whereclause = $timeclause;
+    }
 
-    // Show visible only.
     if ($ignorehidden) {
-        $whereconditions[] = "(e.visible = 1)";
+        $whereclause .= ' AND e.visible = 1';
     }
 
-    // Build the main query's WHERE clause.
-    $whereclause = implode(' AND ', $whereconditions);
-
-    // Build SQL subquery and conditions for filtered events based on priorities.
-    $subquerywhere = '';
-    $subqueryconditions = [];
-
-    // Get the user's courses. Otherwise, get the default courses being shown by the calendar.
-    $usercourses = calendar_get_default_courses();
-
-    // Set calendar filters.
-    list($usercourses, $usergroups, $user) = calendar_set_filters($usercourses, true);
-    $subqueryparams = [];
-
-    // Flag to indicate whether the query needs to exclude group overrides.
-    $viewgroupsonly = false;
-    if ($user) {
-        // Set filter condition for the user's events.
-        $subqueryconditions[] = "(ev.userid = :user AND ev.courseid = 0 AND ev.groupid = 0)";
-        $subqueryparams['user'] = $user;
-        foreach ($usercourses as $courseid) {
-            if (has_capability('moodle/site:accessallgroups', context_course::instance($courseid))) {
-                $usergroupmembership = groups_get_all_groups($courseid, $user, 0, 'g.id');
-                if (count($usergroupmembership) == 0) {
-                    $viewgroupsonly = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    // Set filter condition for the user's group events.
-    if ($usergroups === true || $viewgroupsonly) {
-        // Fetch group events, but not group overrides.
-        $subqueryconditions[] = "(ev.groupid != 0 AND ev.eventtype = 'group')";
-    } else if (!empty($usergroups)) {
-        // Fetch group events and group overrides.
-        list($inusergroups, $inusergroupparams) = $DB->get_in_or_equal($usergroups, SQL_PARAMS_NAMED);
-        $subqueryconditions[] = "(ev.groupid $inusergroups)";
-        $subqueryparams = array_merge($subqueryparams, $inusergroupparams);
-    }
-
-    // Get courses to be used for the subquery.
-    $subquerycourses = [];
-    if (is_array($courses)) {
-        $subquerycourses = $courses;
-    } else if (is_numeric($courses)) {
-        $subquerycourses[] = $courses;
-    }
-
-    // Merge with user courses, if necessary.
-    if (!empty($usercourses)) {
-        $subquerycourses = array_merge($subquerycourses, $usercourses);
-        // Make sure we remove duplicate values.
-        $subquerycourses = array_unique($subquerycourses);
-    }
-
-    // Set subquery filter condition for the courses.
-    if (!empty($subquerycourses)) {
-        list($incourses, $incoursesparams) = $DB->get_in_or_equal($subquerycourses, SQL_PARAMS_NAMED);
-        $subqueryconditions[] = "(ev.groupid = 0 AND ev.courseid $incourses)";
-        $subqueryparams = array_merge($subqueryparams, $incoursesparams);
-    }
-
-    // Build the WHERE condition for the sub-query.
-    if (!empty($subqueryconditions)) {
-        $subquerywhere = 'WHERE ' . implode(" OR ", $subqueryconditions);
-    }
-
-    // Merge subquery parameters to the parameters of the main query.
-    if (!empty($subqueryparams)) {
-        $params = array_merge($params, $subqueryparams);
-    }
-
-    // Sub-query that fetches the list of unique events that were filtered based on priority.
-    $subquery = "SELECT ev.modulename,
-                            ev.instance,
-                            ev.eventtype,
-                            MAX(ev.priority) as priority
-                       FROM {event} ev
-                      $subquerywhere
-                   GROUP BY ev.modulename, ev.instance, ev.eventtype";
-
-    // Build the main query.
     $sql = "SELECT e.*
-                  FROM {event} e
-            INNER JOIN ($subquery) fe
-                    ON e.modulename = fe.modulename
-                       AND e.instance = fe.instance
-                       AND e.eventtype = fe.eventtype
-                       AND (e.priority = fe.priority OR (e.priority IS NULL AND fe.priority IS NULL))
-             LEFT JOIN {modules} m
-                    ON e.modulename = m.name
-                 WHERE (m.visible = 1 OR m.visible IS NULL) AND $whereclause
-              ORDER BY e.timestart";
+              FROM {event} e
+         LEFT JOIN {modules} m ON e.modulename = m.name
+                -- Non visible modules will have a value of 0.
+             WHERE (m.visible = 1 OR m.visible IS NULL) AND $whereclause
+          ORDER BY e.timestart";
     $events = $DB->get_records_sql($sql, $params);
 
     if ($events === false) {
         $events = array();
     }
-
     return $events;
 }
 
@@ -1404,8 +1309,8 @@ function calendar_get_mini($courses, $groups, $users, $calmonth = false, $calyea
     if (!empty($events)) {
         foreach ($events as $eventid => $event) {
             if (!empty($event->modulename)) {
-                $cm = get_coursemodule_from_instance($event->modulename, $event->instance);
-                if (!\core_availability\info_module::is_user_visible($cm, 0, false)) {
+                $instances = get_fast_modinfo($event->courseid)->get_instances_of($event->modulename);
+                if (empty($instances[$event->instance]->uservisible)) {
                     unset($events[$eventid]);
                 }
             }
@@ -1730,23 +1635,11 @@ function calendar_get_upcoming($courses, $groups, $users, $daysinfuture, $maxeve
     }
 
     if ($events !== false) {
-        $modinfo = get_fast_modinfo($COURSE);
         foreach ($events as $event) {
             if (!empty($event->modulename)) {
-                if ($event->courseid == $COURSE->id) {
-                    if (isset($modinfo->instances[$event->modulename][$event->instance])) {
-                        $cm = $modinfo->instances[$event->modulename][$event->instance];
-                        if (!$cm->uservisible) {
-                            continue;
-                        }
-                    }
-                } else {
-                    if (!$cm = get_coursemodule_from_instance($event->modulename, $event->instance)) {
-                        continue;
-                    }
-                    if (!\core_availability\info_module::is_user_visible($cm, 0, false)) {
-                        continue;
-                    }
+                $instances = get_fast_modinfo($event->courseid)->get_instances_of($event->modulename);
+                if (empty($instances[$event->instance]->uservisible)) {
+                    continue;
                 }
             }
 
@@ -1766,18 +1659,20 @@ function calendar_get_upcoming($courses, $groups, $users, $daysinfuture, $maxeve
 /**
  * Get a HTML link to a course.
  *
- * @param int $courseid the course id
+ * @param int|stdClass $course the course id or course object
  * @return string a link to the course (as HTML); empty if the course id is invalid
  */
-function calendar_get_courselink($courseid) {
-    if (!$courseid) {
+function calendar_get_courselink($course) {
+    if (!$course) {
         return '';
     }
 
-    calendar_get_course_cached($coursecache, $courseid);
-    $context = \context_course::instance($courseid);
-    $fullname = format_string($coursecache[$courseid]->fullname, true, array('context' => $context));
-    $url = new \moodle_url('/course/view.php', array('id' => $courseid));
+    if (!is_object($course)) {
+        $course = calendar_get_course_cached($coursecache, $course);
+    }
+    $context = \context_course::instance($course->id);
+    $fullname = format_string($course->fullname, true, array('context' => $context));
+    $url = new \moodle_url('/course/view.php', array('id' => $course->id));
     $link = \html_writer::link($url, $fullname);
 
     return $link;
@@ -1785,6 +1680,9 @@ function calendar_get_courselink($courseid) {
 
 /**
  * Get current module cache.
+ *
+ * Only use this method if you do not know courseid. Otherwise use:
+ * get_fast_modinfo($courseid)->instances[$modulename][$instance]
  *
  * @param array $modulecache in memory module cache
  * @param string $modulename name of the module
@@ -1842,26 +1740,25 @@ function calendar_add_event_metadata($event) {
     if (!empty($event->modulename)) { // Activity event.
         // The module name is set. I will assume that it has to be displayed, and
         // also that it is an automatically-generated event. And of course that the
-        // fields for get_coursemodule_from_instance are set correctly.
-        $module = calendar_get_module_cached($coursecache, $event->modulename, $event->instance);
-
-        if ($module === false) {
+        // instace id and modulename are set correctly.
+        $instances = get_fast_modinfo($event->courseid)->get_instances_of($event->modulename);
+        if (!array_key_exists($event->instance, $instances)) {
             return;
         }
+        $module = $instances[$event->instance];
 
-        $modulename = get_string('modulename', $event->modulename);
+        $modulename = $module->get_module_type_name(false);
         if (get_string_manager()->string_exists($event->eventtype, $event->modulename)) {
             // Will be used as alt text if the event icon.
             $eventtype = get_string($event->eventtype, $event->modulename);
         } else {
             $eventtype = '';
         }
-        $icon = $OUTPUT->image_url('icon', $event->modulename) . '';
 
-        $event->icon = '<img src="' . $icon . '" alt="' . $eventtype . '" title="' . $modulename . '" class="icon" />';
-        $event->referer = '<a href="' . $CFG->wwwroot . '/mod/' . $event->modulename . '/view.php?id=' .
-            $module->id . '">' . $event->name . '</a>';
-        $event->courselink = calendar_get_courselink($module->course);
+        $event->icon = '<img src="' . s($module->get_icon_url()) . '" alt="' . s($eventtype) .
+            '" title="' . s($modulename) . '" class="icon" />';
+        $event->referer = html_writer::link($module->url, $event->name);
+        $event->courselink = calendar_get_courselink($module->get_course());
         $event->cmid = $module->id;
     } else if ($event->courseid == SITEID) { // Site event.
         $event->icon = '<img src="' . $OUTPUT->image_url('i/siteevent') . '" alt="' .
@@ -3067,7 +2964,7 @@ function calendar_add_icalendar_event($event, $courseid, $subscriptionid, $timez
         if (!empty($event->properties['RRULE'])) {
             // Repeating events.
             date_default_timezone_set($tz); // Change time zone to parse all events.
-            $rrule = new rrule_manager($event->properties['RRULE'][0]->value);
+            $rrule = new \core_calendar\rrule_manager($event->properties['RRULE'][0]->value);
             $rrule->parse_rrule();
             $rrule->create_events($createdevent);
             \core_date::set_default_server_timezone(); // Change time zone back to what it was.

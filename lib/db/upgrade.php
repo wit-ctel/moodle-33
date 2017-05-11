@@ -2575,6 +2575,10 @@ function xmldb_main_upgrade($oldversion) {
         $record->nextruntime = $nextruntime;
         $DB->insert_record('task_adhoc', $record);
 
+        // This same task is queued again in a later step, but if we already queue it here
+        // then there is no need to queue it again. We use this flag in the second step.
+        $refresheventsadhocadded = true;
+
         // Main savepoint reached.
         upgrade_main_savepoint(true, 2017030700.00);
     }
@@ -2832,6 +2836,62 @@ function xmldb_main_upgrade($oldversion) {
         }
 
         upgrade_main_savepoint(true, 2017041801.00);
+    }
+
+    if ($oldversion < 2017042600.01) {
+        // If the previous step didn't execute and queue the task.
+        if (!isset($refresheventsadhocadded)) {
+            // Create adhoc task for upgrading of existing calendar events.
+            $record = new \stdClass();
+            $record->classname = "\\core\\task\\refresh_mod_calendar_events_task";
+            $record->component = 'core';
+
+            // Next run time based from nextruntime computation in \core\task\manager::queue_adhoc_task().
+            $nextruntime = time() - 1;
+            $record->nextruntime = $nextruntime;
+            $DB->insert_record('task_adhoc', $record);
+
+        }
+
+        // Main savepoint reached.
+        upgrade_main_savepoint(true, 2017042600.01);
+    }
+
+    if ($oldversion < 2017050500.01) {
+        // Get the list of parent event IDs.
+        $sql = "SELECT DISTINCT repeatid
+                           FROM {event}
+                          WHERE repeatid <> 0";
+        $parentids = array_keys($DB->get_records_sql($sql));
+        // Check if there are repeating events we need to process.
+        if (!empty($parentids)) {
+            // The repeat IDs of parent events should match their own ID.
+            // So we need to update parent events that have non-matching IDs and repeat IDs.
+            list($insql, $params) = $DB->get_in_or_equal($parentids);
+            $updatesql = "UPDATE {event}
+                             SET repeatid = id
+                           WHERE id <> repeatid
+                                 AND id $insql";
+            $DB->execute($updatesql, $params);
+        }
+
+        // Main savepoint reached.
+        upgrade_main_savepoint(true, 2017050500.01);
+    }
+
+    if ($oldversion < 2017050500.02) {
+        // MDL-58684:
+        // Remove all portfolio_tempdata records as these may contain serialized \file_system type objects, which are now unable to
+        // be unserialized because of changes to the file storage API made in MDL-46375. Portfolio now stores an id reference to
+        // files instead of the object.
+        // These records are normally removed after a successful export, however, can be left behind if the user abandons the
+        // export attempt (a stale record). Additionally, each stale record cannot be reused and is normally cleaned up by the cron
+        // task core\task\portfolio_cron_task. Since the cron task tries to unserialize them, and generates a warning, we'll remove
+        // all records here.
+        $DB->delete_records_select('portfolio_tempdata', 'id > ?', [0]);
+
+        // Main savepoint reached.
+        upgrade_main_savepoint(true, 2017050500.02);
     }
 
     return true;
