@@ -16,3 +16,6 @@
 [submodule "blocks/student_fee"]
 	path = blocks/student_fee
 	url = git@github.com:wit-ctel/moodle-block_student_fee.git
+[submodule "mod/adobeconnect"]
+	path = mod/adobeconnect
+	url = git@github.com:wit-ctel/moodle-mod_adobeconnect.git
