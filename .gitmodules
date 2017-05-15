@@ -16,3 +16,6 @@
 [submodule "mod/adobeconnect"]
 	path = mod/adobeconnect
 	url = git@github.com:wit-ctel/moodle-mod_adobeconnect.git
+[submodule "blocks/supportsection"]
+	path = blocks/supportsection
+	url = git@github.com:wit-ctel/supportsection.git
